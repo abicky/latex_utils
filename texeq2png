@@ -51,6 +51,9 @@ my $density = '100x100'; # density for PNG images
 my $texfile = $ARGV[0];
 die "Error: texfile '$texfile' not found" unless -f $texfile;
 
+$texfile =~ m|^(.+/)|;
+my $dirname = defined $1 ? $1 : '';
+
 # output destionation
 my $imgdir = $texfile;
 $imgdir =~ s/^(.*)\..*$/$1/;
@@ -166,7 +169,7 @@ sub scan {
         next if /^(\s*%|\\maketitle)/;
         $sflag = 1 if /\\begin\{document\}/;
         if (/^\s*\\(?:include|input)\{([^}]+)\}/) {
-            open my $subfh, "<$1.tex";
+            open my $subfh, "<$dirname$1.tex";
             &scan($subfh);
             close $subfh;
         }        
