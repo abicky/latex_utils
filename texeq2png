@@ -1,0 +1,175 @@
+#!/usr/bin/env perl
+
+#-------------------------------------------------------------------------------#
+# texeq2png                                                                     #
+#                                                                               #
+# The MIT License                                                               #
+#                                                                               #
+# Copyright (c) 2011 Takeshi Arabiki                                            #
+#                                                                               #
+# Permission is hereby granted, free of charge, to any person obtaining a copy  #
+# of this software and associated documentation files (the "Software"), to deal #
+# in the Software without restriction, including without limitation the rights  #
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell     #
+# copies of the Software, and to permit persons to whom the Software is         #
+# furnished to do so, subject to the following conditions:                      #
+#                                                                               #
+# The above copyright notice and this permission notice shall be included in    #
+# all copies or substantial portions of the Software.                           #
+#                                                                               #
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR    #
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,      #
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE   #
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER        #
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, #
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN     #
+# THE SOFTWARE.                                                                 #
+#                                                                               #
+# Description:                                                                  #
+#   export equations in the specified texfile to PNG images                     #
+#                                                                               #
+# Dependencies:                                                                 #
+#   LaTeX environment (latex or platex, dvips), ImageMagick                     #
+#                                                                               #
+# Usage:                                                                        #
+#   texeq2png texfile                                                           #
+#                                                                               #
+#-------------------------------------------------------------------------------#
+
+use strict;
+use warnings;
+use File::Temp qw/tempfile tempdir/;
+
+if (@ARGV == 0 || $ARGV[0] =~ /^(?:-h|--help)$/) {
+    print "usage: texeq2png texfile\n";
+    exit;
+}
+
+my $LATEX = 'platex';
+my $density = '100x100'; # density for PNG images
+
+my $texfile = $ARGV[0];
+die "Error: texfile '$texfile' not found" unless -f $texfile;
+
+# output destionation
+my $imgdir = $texfile;
+$imgdir =~ s/^(.*)\..*$/$1/;
+$imgdir .= '.images';
+my $txtfile = "$imgdir/plain.txt";
+if (! -d $imgdir) {
+    mkdir $imgdir;
+}
+
+# tempfile for writing only equations
+my ($tmpfh, $tmpfile) = tempfile(DIR => '.');
+my $tmpdir = tempdir(CLEANUP => 1);
+
+my $body;
+my $sflag = 0;
+open TXT, ">$txtfile";
+open my $fh, "<$texfile";
+&scan($fh);
+close $fh;
+
+# extract equations
+# not consider strange equations like '\[ x \\] \]', '\[ x \\) \]', 
+my @matches = $body =~ m{
+   (
+   \\begin\{((?:(?:display)?math|equation|eqnarray|align)\*?)\}.+?\\end\{\2\}
+   |
+   \\[(\[].+?\\[)\]]
+   |
+   (?<!\\)\${1,2}.+?(?<!\\)\${1,2}
+   )
+}gsx;
+
+# extract only equations
+my $i = 0;
+@matches = grep ++$i % 2, @matches;
+
+# remove equation numbers
+map s/^\\begin\{(equation|eqnarray|align)\}/\\begin{$1*}/, @matches;
+map s/\\end\{(equation|eqnarray|align)\}$/\\end{$1*}/, @matches;
+
+# make a DVI file
+my $oldfh = select $tmpfh;
+$| = 1;
+my $eqs = join("\n\\clearpage\n", @matches);
+print $tmpfh <<"TEX";
+\\begin{document}
+\\pagestyle{empty}
+$eqs
+\\end{document}
+TEX
+select $oldfh;
+
+# make EPS files
+system("$LATEX $tmpfile");
+system("dvips -E -q -i -Ppdf -o\"$tmpdir/img\" $tmpfile.dvi");
+
+# convert EPS files to PNG images
+my $len = length @matches;
+opendir DH, $tmpdir;
+print "\nMaking PNG images in '$imgdir' directory...\n";
+$i = 0;
+while (my $file = readdir DH) {
+    next if $file =~ /^\./;
+    print sprintf(" %*d / %d\r", $len, ++$i, $#matches + 1);
+    system("convert -density $density $tmpdir/$file $imgdir/$file.png");
+}
+print "\n";
+$| = 0;
+
+
+#---------------------#
+# output a plain text #
+#---------------------#
+
+# replace equations with '#imgXXX#'
+$i = 0;
+$body =~   s{
+    \\begin\{((?:(?:display)?math|equation|eqnarray|align)\*?)\}.+?\\end\{\1\}
+    |
+    \\[(\[].+?\\[)\]]
+    |
+    (?<!\\)\${1,2}.+?(?<!\\)\${1,2}
+}{
+    sprintf("#img%0*d#", $len, ++$i)
+}gsex;
+
+# replace tables with '#tableXXX#'
+$i = 0;
+$body =~ s/\\begin\{table\}.*?\\end\{table\}/sprintf("#table%03d#", ++$i)/gse;
+# replace figures with '#figureXXX#'
+$i = 0;
+$body =~ s/\\begin\{figure\}.*?\\end\{figure\}/sprintf("#figure%03d#", ++$i)/gse;
+# remove comments
+$body =~ s/(?<!\\)%.*//g;
+# replace '\%' with '%'
+$body =~ s/\\%/%/g;
+
+# remove extra line breaks
+$body =~ s/(?<!})\r?\n(?!(\r?\n|\\(sub){0,2}section|\\chapter))//g;
+$body =~ s/(\r?\n)+(?!\\)/\n　/g;
+$body =~ s/\\{2}/\n/g;
+$body =~ s/\n/\r\n/g;
+
+# make a plain text
+print TXT $body;
+
+unlink <$tmpfile*>;
+
+
+sub scan {
+    my $fh = shift;
+    while (<$fh>) {
+        next if /^(\s*%|\\maketitle)/;
+        $sflag = 1 if /\\begin\{document\}/;
+        if (/^\s*\\(?:include|input)\{([^}]+)\}/) {
+            open my $subfh, "<$1.tex";
+            &scan($subfh);
+            close $subfh;
+        }        
+        $sflag ? $body .= $_ : print $tmpfh $_ if defined $_;
+    }
+}
