@@ -25,6 +25,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN     #
 # THE SOFTWARE.                                                                 #
 #                                                                               #
+#                                                                               #
 # Description:                                                                  #
 #   export equations in the specified texfile to PNG images                     #
 #                                                                               #
@@ -51,8 +52,8 @@ my $density = '100x100'; # density for PNG images
 my $texfile = $ARGV[0];
 die "Error: texfile '$texfile' not found" unless -f $texfile;
 
-$texfile =~ m|^(.+/)|;
-my $dirname = defined $1 ? $1 : '';
+$texfile =~ m|^(.+)/|;
+my $dirname = defined $1 ? $1 : '.';
 
 # output destionation
 my $imgdir = $texfile;
@@ -64,39 +65,39 @@ if (! -d $imgdir) {
 }
 
 # tempfile for writing only equations
-my ($tmpfh, $tmpfile) = tempfile(DIR => '.');
+my ($tmpfh, $tmpfile) = tempfile(DIR => $dirname, UNLINK => 1);
 my $tmpdir = tempdir(CLEANUP => 1);
 
 my $body;
 my $sflag = 0;
-open TXT, ">$txtfile";
-open my $fh, "<$texfile";
-&scan($fh);
-close $fh;
+open my $txtfh, ">$txtfile";
+open my $texfh, "<$texfile";
+&scan($texfh);
+close $texfh;
 
 # extract equations
 # not consider strange equations like '\[ x \\] \]', '\[ x \\) \]', 
 my @matches = $body =~ m{
-   (
-   \\begin\{((?:(?:display)?math|equation|eqnarray|align)\*?)\}.+?\\end\{\2\}
-   |
-   \\[(\[].+?\\[)\]]
-   |
-   (?<!\\)\${1,2}.+?(?<!\\)\${1,2}
-   )
+    (
+      \\begin\{((?:(?:display)?math|equation|eqnarray|align)\*?)\}.+?\\end\{\2\}
+      |
+      \\[(\[].+?\\[)\]]                     # \[ ... \] or \( ... \)
+      |
+      (?<!\\)\${1,2}.+?(?<!\\)\${1,2}       # $ ... $ or $$ ... $$
+    )
 }gsx;
 
 # extract only equations
 my $i = 0;
-@matches = grep ++$i % 2, @matches;
+@matches = grep { ++$i % 2 } @matches;
 
 # remove equation numbers
-map s/^\\begin\{(equation|eqnarray|align)\}/\\begin{$1*}/, @matches;
-map s/\\end\{(equation|eqnarray|align)\}$/\\end{$1*}/, @matches;
+for (@matches) {
+    s/^\\begin\{(equation|eqnarray|align)\}/\\begin{$1*}/;
+    s/\\end\{(equation|eqnarray|align)\}$/\\end{$1*}/;
+}
 
 # make a DVI file
-my $oldfh = select $tmpfh;
-$| = 1;
 my $eqs = join("\n\\clearpage\n", @matches);
 print $tmpfh <<"TEX";
 \\begin{document}
@@ -104,18 +105,18 @@ print $tmpfh <<"TEX";
 $eqs
 \\end{document}
 TEX
-select $oldfh;
+close $tmpfh;
 
 # make EPS files
-system("$LATEX $tmpfile");
-system("dvips -E -q -i -Ppdf -o\"$tmpdir/img\" $tmpfile.dvi");
+system("$LATEX --output-directory=$dirname $tmpfile && dvips -E -q -i -Ppdf -o\"$tmpdir/img\" $tmpfile.dvi");
 
 # convert EPS files to PNG images
 my $len = length @matches;
-opendir DH, $tmpdir;
+opendir my $tmpdh, $tmpdir;
+$| = 1;
 print "\nMaking PNG images in '$imgdir' directory...\n";
 $i = 0;
-while (my $file = readdir DH) {
+while (my $file = readdir $tmpdh) {
     next if $file =~ /^\./;
     print sprintf(" %*d / %d\r", $len, ++$i, $#matches + 1);
     system("convert -density $density $tmpdir/$file $imgdir/$file.png");
@@ -130,12 +131,12 @@ $| = 0;
 
 # replace equations with '#imgXXX#'
 $i = 0;
-$body =~   s{
+$body =~ s{
     \\begin\{((?:(?:display)?math|equation|eqnarray|align)\*?)\}.+?\\end\{\1\}
     |
-    \\[(\[].+?\\[)\]]
+    \\[(\[].+?\\[)\]]                     # \[ ... \] or \( ... \)
     |
-    (?<!\\)\${1,2}.+?(?<!\\)\${1,2}
+    (?<!\\)\${1,2}.+?(?<!\\)\${1,2}       # $ ... $ or $$ ... $$
 }{
     sprintf("#img%0*d#", $len, ++$i)
 }gsex;
@@ -158,7 +159,8 @@ $body =~ s/\\{2}/\n/g;
 $body =~ s/\n/\r\n/g;
 
 # make a plain text
-print TXT $body;
+print $txtfh $body;
+close $txtfh;
 
 unlink <$tmpfile*>;
 
@@ -169,7 +171,7 @@ sub scan {
         next if /^(\s*%|\\maketitle)/;
         $sflag = 1 if /\\begin\{document\}/;
         if (/^\s*\\(?:include|input)\{([^}]+)\}/) {
-            open my $subfh, "<$dirname$1.tex";
+            open my $subfh, "<$dirname/$1.tex";
             &scan($subfh);
             close $subfh;
         }        
